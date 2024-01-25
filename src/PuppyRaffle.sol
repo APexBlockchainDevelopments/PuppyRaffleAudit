@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.7.6;
+pragma solidity ^0.7.6;  
+///@audit use of floating pragma is bad
+//@audit-info why are you using 0.7??????
 
 import {ERC721} from "@openzeppelin/contracts/token/ERC721/ERC721.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
@@ -21,6 +23,8 @@ contract PuppyRaffle is ERC721, Ownable {
     uint256 public immutable entranceFee;
 
     address[] public players;
+
+    //@audit gas this should be immutable
     uint256 public raffleDuration;
     uint256 public raffleStartTime;
     address public previousWinner;
@@ -34,6 +38,7 @@ contract PuppyRaffle is ERC721, Ownable {
     mapping(uint256 => string) public rarityToUri;
     mapping(uint256 => string) public rarityToName;
 
+    //@audit gas should constant
     // Stats for the common puppy (pug)
     string private commonImageUri = "ipfs://QmSsYRx3LpDAb1GZQm7zZ1AuHZjfbPkD6J7s9r41xu1mf8";
     uint256 public constant COMMON_RARITY = 70;
@@ -59,6 +64,7 @@ contract PuppyRaffle is ERC721, Ownable {
     /// @param _raffleDuration the duration in seconds of the raffle
     constructor(uint256 _entranceFee, address _feeAddress, uint256 _raffleDuration) ERC721("Puppy Raffle", "PR") {
         entranceFee = _entranceFee;
+        //@audit-info check for zero address - input validation
         feeAddress = _feeAddress;
         raffleDuration = _raffleDuration;
         raffleStartTime = block.timestamp;
@@ -80,11 +86,10 @@ contract PuppyRaffle is ERC721, Ownable {
     //@audit  (1istRun) check should happen before player is added
     //@audit  (1istRun) should be greater than or equal to entrance fee?
     function enterRaffle(address[] memory newPlayers) public payable {
-        //Q were custom ervers a thing in 0.7.6 of solidity?
         //What if it's 0?
         require(msg.value == entranceFee * newPlayers.length, "PuppyRaffle: Must send enough to enter raffle");
+        //@audit-info use a cached variable for players.length gas
         for (uint256 i = 0; i < newPlayers.length; i++) {
-            //Question what resets the players array?
             players.push(newPlayers[i]);
         }
 
@@ -95,6 +100,8 @@ contract PuppyRaffle is ERC721, Ownable {
                 require(players[i] != players[j], "PuppyRaffle: Duplicate player");
             }
         }
+
+        //@followup/audit q if its an empty we stillemit an event?
         emit RaffleEnter(newPlayers);
     }
 
@@ -110,6 +117,7 @@ contract PuppyRaffle is ERC721, Ownable {
         payable(msg.sender).sendValue(entranceFee);
 
         players[playerIndex] = address(0);
+        //@audit-low event might be able to be manipulated, missing or wrong
         emit RaffleRefunded(playerAddress);
     }
 
@@ -117,12 +125,12 @@ contract PuppyRaffle is ERC721, Ownable {
     /// @param player the address of a player in the raffle
     /// @return the index of the player in the array, if they are not active, it returns 0
     function getActivePlayerIndex(address player) external view returns (uint256) {
+        //@audit-info use a cached variable for players.length gas
         for (uint256 i = 0; i < players.length; i++) {
             if (players[i] == player) {
                 return i;
             }
         }
-        //question what if player is at index 0
         //@audit player is at index 0, it'll return 0 and theyh might think they are not actie
         return 0;
     }
@@ -138,19 +146,22 @@ contract PuppyRaffle is ERC721, Ownable {
     //@audit (1istRun) weak rng
     //@audit (1istRun) reentrancy risk
     //@audit (1istRun) could select an empty slot, needs to check if index of array has valid address
-    //@audit does this follow CEI?
+    //@audit does this follow CEI? Reccomend tofollow  CEIT 
     function selectWinner() external {
         require(block.timestamp >= raffleStartTime + raffleDuration, "PuppyRaffle: Raffle not over");
         require(players.length >= 4, "PuppyRaffle: Need at least 4 players");
 
         //@audit (1istRun) picking mechnaism is not secure. Out could could be determined.
         //fixes Chainlink VRF, Cmmit Reveal Scheme
+
+        //q gas war?  //@followup
+        //uint256 public contastant PRIZE_POOL_PERCENTAGE = 80;
+        //uint256 publci constant PRIZE_PRECISION = 100;
         uint256 winnerIndex =
             uint256(keccak256(abi.encodePacked(msg.sender, block.timestamp, block.difficulty))) % players.length;
         address winner = players[winnerIndex];
 
-        //q is 80% correct?
-        //q loss of preicision error?
+        //@audit-into Magic Numbers
         uint256 totalAmountCollected = players.length * entranceFee;
         uint256 prizePool = (totalAmountCollected * 80) / 100;
         uint256 fee = (totalAmountCollected * 20) / 100;
@@ -164,6 +175,7 @@ contract PuppyRaffle is ERC721, Ownable {
         // We use a different RNG calculate from the winnerIndex to determine rarity
 
         //@audit weak RNG
+        //@audit people can revert tx until they win
         uint256 rarity = uint256(keccak256(abi.encodePacked(msg.sender, block.difficulty))) % 100;
         if (rarity <= COMMON_RARITY) {
             tokenIdToRarity[tokenId] = COMMON_RARITY;
@@ -173,9 +185,12 @@ contract PuppyRaffle is ERC721, Ownable {
             tokenIdToRarity[tokenId] = LEGENDARY_RARITY;
         }
 
-        delete players;
-        raffleStartTime = block.timestamp;
-        previousWinner = winner;
+        delete players; //e restetting players array
+        raffleStartTime = block.timestamp; //e restting raffle start time
+        previousWinner = winner; //e vanity thing, dones't matter mcuh
+
+        //q can we reenter somewhere
+        //@audit winer could be a contract with a bad fallback or messed up
         (bool success,) = winner.call{value: prizePool}("");
         require(success, "PuppyRaffle: Failed to send prize pool to winner");
         _safeMint(winner, tokenId);
@@ -183,11 +198,13 @@ contract PuppyRaffle is ERC721, Ownable {
 
     /// @notice this function will withdraw the fees to the feeAddress
     //@audit (1istRun) anyone can call this at any time
-
+    //@audit should be internal function
     function withdrawFees() external {
+        //@audit mishandling fees
         require(address(this).balance == uint256(totalFees), "PuppyRaffle: There are currently players active!");
         uint256 feesToWithdraw = totalFees;
         totalFees = 0;
+        //slither-disable-next-line arbitrary-send-eth
         (bool success,) = feeAddress.call{value: feesToWithdraw}("");
         require(success, "PuppyRaffle: Failed to withdraw fees");
     }
@@ -195,12 +212,15 @@ contract PuppyRaffle is ERC721, Ownable {
     /// @notice only the owner of the contract can change the feeAddress
     /// @param newFeeAddress the new address to send fees to
     function changeFeeAddress(address newFeeAddress) external onlyOwner {
+        //@audit-into check for zero address 
         feeAddress = newFeeAddress;
+        //q are we missing events?
         emit FeeAddressChanged(newFeeAddress);
     }
 
     /// @notice this function will return true if the msg.sender is an active player
     //@audit (1istRun) this funiciont is broken? Should take in an address in params and compare that instead of msg.sender, or extneral?
+    //@audit this isn't used anywhere
     function _isActivePlayer() internal view returns (bool) {
         for (uint256 i = 0; i < players.length; i++) {
             if (players[i] == msg.sender) {
