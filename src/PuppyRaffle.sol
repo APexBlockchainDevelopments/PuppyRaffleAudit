@@ -134,25 +134,36 @@ contract PuppyRaffle is ERC721, Ownable {
     /// @dev we reset the active players array after the winner is selected
     /// @dev we send 80% of the funds to the winner, the other 20% goes to the feeAddress
 
-    //@audit (1istRun) picking mechnaism is not secure. Out could could be determined.
+
     //@audit (1istRun) weak rng
     //@audit (1istRun) reentrancy risk
-    //@audit (1istRun) anyone can call this
     //@audit (1istRun) could select an empty slot, needs to check if index of array has valid address
+    //@audit does this follow CEI?
     function selectWinner() external {
         require(block.timestamp >= raffleStartTime + raffleDuration, "PuppyRaffle: Raffle not over");
         require(players.length >= 4, "PuppyRaffle: Need at least 4 players");
+
+        //@audit (1istRun) picking mechnaism is not secure. Out could could be determined.
+        //fixes Chainlink VRF, Cmmit Reveal Scheme
         uint256 winnerIndex =
             uint256(keccak256(abi.encodePacked(msg.sender, block.timestamp, block.difficulty))) % players.length;
         address winner = players[winnerIndex];
+
+        //q is 80% correct?
+        //q loss of preicision error?
         uint256 totalAmountCollected = players.length * entranceFee;
         uint256 prizePool = (totalAmountCollected * 80) / 100;
         uint256 fee = (totalAmountCollected * 20) / 100;
-        totalFees = totalFees + uint64(fee);
-
+        //@audit overflow attack?
+        //ex total fees is the total the owner should be able to collect
+        //Fixes: newever versions of solidity, bigger uints
+        //@audit unsafe cast of uint64 
+        totalFees = totalFees + uint64(fee); 
         uint256 tokenId = totalSupply();
 
         // We use a different RNG calculate from the winnerIndex to determine rarity
+
+        //@audit weak RNG
         uint256 rarity = uint256(keccak256(abi.encodePacked(msg.sender, block.difficulty))) % 100;
         if (rarity <= COMMON_RARITY) {
             tokenIdToRarity[tokenId] = COMMON_RARITY;

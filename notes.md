@@ -1,6 +1,8 @@
 # About 
 
->About the project in my own words
+>About the project in my own words. `selectWinner` picks the winner, there is a raffle duration. 
+
+
 #High 
 
 - Found a Dos
