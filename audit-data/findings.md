@@ -125,6 +125,25 @@ To prevent this, we should have the `PuppyRafle::refund` function update the `pl
 Denial of Service attack
 
 
+### [H-2] Weak randomness in `PuppyRaffle::selectWinner` allows user to influence or predict winner and influence or predict the winning puppy.
+
+**Description** Hashing `msg.sender`, `block.timestamp`, and `block.difficulty` together creates a predictable find number. A predicatble number is not a good random nubmer. Malicous users can manipulate these values or know them ahead of time to chose the winner of the raffle themselves.
+
+*Note:* This additionaly means users coudl front-run this function and call `refund` if they see they are not the winner.
+
+**Impact** Any user can influence teh winner of the raffle, winning the money and selecting the `rarest` puppy. Making the entire raffle worthless if it becoems a gas war as towho wins the raffles.
+
+**Proof Of Concept:**
+
+1. Validators can know ahead of time the `block.timestamp` and `block.difficulty` and that to predict when/how to participate. See the [solidity blog on prevrandao] (https://soliditydeveloper.com/prevrandao). `block.diffuculty` was recently replaced with prevrandao.
+2. Users can mine/manipulate their `msg.sender` value to result their address beingused to generate the winner!
+3. User can revert their `selectWinner` transaction if they don't like the winer or resulting puppy.
+
+Using on-chain values on randomness see is a [well-documented attack vector](https://betterprogramming.pub/how-to-generate-truly-random-numbers-in-solidity-and-blockchain-9ced6472dbdf) blockchain space.
+
+
+**Recommended Mitiations:** Consider using a cryptographically provable random number generator such as ChainLink VRF.
+
 ### [M-#] Looping through players array to check for duplicates in `PuppyRaffle::enterRaffle` isa potential denial of service (DoS) attack, incrementing gas costs for future entrants.
 
 **Description:** The `PuppyRaffle::enterRaffle` function loops through `players` array to check for duplicates. However the longer the `PuppyRaffle::players` array is, the more checks a new player will have to make. This means the gas cost forplayers who enter right when the raffle stats will be dramatically lower han those who enter later. Every additional address in the `players` array, is an additional check the loop will have to make.
@@ -344,3 +363,21 @@ It's best to keep code clean and follow CEI (Checks, Effects, Interactions).
 ```
 
 
+### [I-5] Use of "magic" numbers is discouraged.
+
+It can be confusing to see number literals in a codebase, and it's much more readable if the numbers are givena  nma.e
+
+Examples:
+
+```javascript
+    uint256 prizePool =(totalAmouuntCollected * 80 ) / 100;
+    uint256 fee = (totalAmountCollected * 20 ) / 100;
+```
+
+Instead you could use:
+```javascript
+    uint256 public constant PRIZE_POOL_PERCENTAGE = 80;
+    uint256 public constant FEE_PERCENTAGE = 20;
+    uint256 public constant POOL_PRECISION = 100;
+
+```
