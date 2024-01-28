@@ -144,7 +144,75 @@ Using on-chain values on randomness see is a [well-documented attack vector](htt
 
 **Recommended Mitiations:** Consider using a cryptographically provable random number generator such as ChainLink VRF.
 
-### [M-#] Looping through players array to check for duplicates in `PuppyRaffle::enterRaffle` isa potential denial of service (DoS) attack, incrementing gas costs for future entrants.
+### [H-3] Integer overflow of `PuppyRaffle::totalFees` loses fees
+
+**Description:**  In solidity versions prior to `0.8.0` integers were subject to integer overflows.
+
+```javascript
+    uint64 myVar = type(uint64).max;
+    //18446744073709551615
+    myVar = myVar + 1;
+
+//myVar will be 0
+```
+
+**Impact** In `PuppyRaffle::selectWinner`, `totalFees` are accumulated for the `feeAddress` to collect later in `PuppyRaffle::withdrawFees`. However, if the `totalFees` variable overflows, the `feeAddress`may not collect the correct amount of fees, leaving fees permanently stuck inthe contract.
+
+**Proof of Concept:**
+
+<details>
+
+1. We have 100 players enter the raffle.
+2. We conclude the raffle.
+3. Since the total fees are more than what a `uint64` can old without overflowing. The expected fees are more than 10 times less thanthe expected fees.
+4. You will not be able to withdraw,due to the link in `PuppyRaffle::withdrawFees()`
+```javascript
+    require(address(this).balance == uint256(totalFees), "PuppyRaffle: Ther are currently Players active!");
+```
+
+Although you could use `selfDestruct` to send ETH to this contract in order for the values to match and withdraw the fees,this is clearly not the intended design of the protocol. At some point there will be too much `balance` in the contract that teh above `require` will be impossible to hit.
+
+<summary>Code</summary>
+
+```javascript
+  function testTotalFeesCanOverFlow() external {
+        //18_446_744_073_709_551_616  ~18.5 Eth
+        //Total entries should be 100, so 100 eth will go to contract
+
+        //Let's enter 100 players
+        uint256 playersNum = 100;
+
+        address[] memory newPlayers = new address[](playersNum);
+        for(uint256 i = 0; i<playersNum; i++){
+            newPlayers[i] = address(i);
+        }
+        puppyRaffle.enterRaffle{value: entranceFee * newPlayers.length}(newPlayers);
+        uint256 expectedTotalFees = ((newPlayers.length * puppyRaffle.entranceFee()) * 20) / 100;
+        uint256 duration = puppyRaffle.raffleDuration();
+        vm.warp(block.timestamp + duration);
+        puppyRaffle.selectWinner();
+
+        console.log(puppyRaffle.totalFees());
+        console.log(expectedTotalFees);
+        assertNotEq(puppyRaffle.totalFees(), expectedTotalFees);
+
+    }
+```
+</details>
+
+**Recommended Mitigiations:** There are a few possible mitigations.
+
+1. Use a newer version of solidity, and a `uint256` instad of a `uint64` for `PuppyRaffle::totalFees`.
+2. You could also use a `SafeMath` library of OpenZeppelin for version 0.7.6 of solidity, however you would still have a hard time of the `uint64` type if too many fees are collected.
+3. Remove the balance check from `PuppyRaffle::withdrawFees`
+
+```diff
+- require(address(this).balance == uint256(totalFees), "PuppyRaffle: Ther are currently Players active!");
+```
+
+There are more attack vectors with that final require, so we recomend removing it regardless.
+
+### [M-1] Looping through players array to check for duplicates in `PuppyRaffle::enterRaffle` isa potential denial of service (DoS) attack, incrementing gas costs for future entrants.
 
 **Description:** The `PuppyRaffle::enterRaffle` function loops through `players` array to check for duplicates. However the longer the `PuppyRaffle::players` array is, the more checks a new player will have to make. This means the gas cost forplayers who enter right when the raffle stats will be dramatically lower han those who enter later. Every additional address in the `players` array, is an additional check the loop will have to make.
 
@@ -255,6 +323,70 @@ function selectWinner() external {
 
 Alterntively, you could use [OpenZeppelin's`EnumerableSet` library]
 (htps://docs.oppenzeppelin.com/contracts/4.x/api/utils#EnumerableSet)/
+
+### [M-2] Unsafe cast of `PuppyRaffle::fee` loses fees
+
+**Description:** In `PuppyRaffle::selectWinner` their is a type cast of a `uint256` to a `uint64`. This is an unsafe cast, and if the `uint256` is larger than `type(uint64).max`, the value will be truncated. 
+
+```javascript
+    function selectWinner() external {
+        require(block.timestamp >= raffleStartTime + raffleDuration, "PuppyRaffle: Raffle not over");
+        require(players.length > 0, "PuppyRaffle: No players in raffle");
+
+        uint256 winnerIndex = uint256(keccak256(abi.encodePacked(msg.sender, block.timestamp, block.difficulty))) % players.length;
+        address winner = players[winnerIndex];
+        uint256 fee = totalFees / 10;
+        uint256 winnings = address(this).balance - fee;
+@>      totalFees = totalFees + uint64(fee);
+        players = new address[](0);
+        emit RaffleWinner(winner, winnings);
+    }
+```
+
+The max value of a `uint64` is `18446744073709551615`. In terms of ETH, this is only ~`18` ETH. Meaning, if more than 18ETH of fees are collected, the `fee` casting will truncate the value. 
+
+**Impact:** This means the `feeAddress` will not collect the correct amount of fees, leaving fees permanently stuck in the contract.
+
+**Proof of Concept:** 
+
+1. A raffle proceeds with a little more than 18 ETH worth of fees collected
+2. The line that casts the `fee` as a `uint64` hits
+3. `totalFees` is incorrectly updated with a lower amount
+
+You can replicate this in foundry's chisel by running the following:
+
+```javascript
+uint256 max = type(uint64).max
+uint256 fee = max + 1
+uint64(fee)
+// prints 0
+```
+
+**Recommended Mitigation:** Set `PuppyRaffle::totalFees` to a `uint256` instead of a `uint64`, and remove the casting. Their is a comment which says:
+
+```javascript
+// We do some storage packing to save gas
+```
+But the potential gas saved isn't worth it if we have to recast and this bug exists. 
+
+```diff
+-   uint64 public totalFees = 0;
++   uint256 public totalFees = 0;
+.
+.
+.
+    function selectWinner() external {
+        require(block.timestamp >= raffleStartTime + raffleDuration, "PuppyRaffle: Raffle not over");
+        require(players.length >= 4, "PuppyRaffle: Need at least 4 players");
+        uint256 winnerIndex =
+            uint256(keccak256(abi.encodePacked(msg.sender, block.timestamp, block.difficulty))) % players.length;
+        address winner = players[winnerIndex];
+        uint256 totalAmountCollected = players.length * entranceFee;
+        uint256 prizePool = (totalAmountCollected * 80) / 100;
+        uint256 fee = (totalAmountCollected * 20) / 100;
+-       totalFees = totalFees + uint64(fee);
++       totalFees = totalFees + fee;
+```
 
 # Low
 
